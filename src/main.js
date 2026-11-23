@@ -722,7 +722,69 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyX') useAbility(2);
 });
 addEventListener('keyup', e => { keys[e.code] = false; });
-canvas.addEventListener('pointerdown', () => { initAudio(); if (S.mode === 'play' && !S.driving) playerShoot(); });
+// ---------- mouse camera: drag-look + pointer-lock look ----------
+// Click-vs-drag scheme (this resolves the old conflict where pointerdown both
+// aimed the camera and fired the gun — in fact it only ever fired, so the
+// mouse did nothing for the camera at all):
+//   * A press that moves < 6 px before release is a CLICK: on foot it fires
+//     the weapon exactly as before, and it also asks the browser for pointer
+//     lock (a real user gesture; every failure is swallowed — drag-look below
+//     is the fallback that works in every browser, locked or not).
+//   * A press that moves >= 6 px is a DRAG: it only orbits the camera and
+//     NEVER fires. While pointer-locked, raw mouse movement orbits freely and
+//     a locked click with < 6 px of accumulated movement still fires.
+//   * On foot the orbit yaw IS the player's heading: the model turns with the
+//     camera and W walks away from the camera (movement was already
+//     heading-relative). While driving, the mouse adds an orbit offset that
+//     decays back behind the car once the mouse goes idle (see updateCamera).
+const camCtl = {
+  yawOffset: 0,       // driving only: mouse orbit offset around the car
+  pitchOffset: 0,     // shared: mouse elevation offset from the mode's base pitch
+  driveYaw: Math.PI,  // driving only: smoothed azimuth easing behind the car
+  yaw: Math.PI, pitch: 0.19, // effective azimuth/elevation of the last frame (test hooks)
+  down: false, dragged: false, lastX: 0, lastY: 0, moveAcc: 0, lastMoveT: -10,
+};
+const PITCH_MIN = -0.09, PITCH_MAX = 0.96; // -5°..55°
+const wrapAng = a => ((a % (Math.PI * 2)) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+function basePitch() { return (S.driving && currentCar) ? 0.123 : 0.193; }
+function applyMouseLook(dx, dy) {
+  const yawDelta = -dx * 0.0042, pitchDelta = dy * 0.0042;
+  if (S.driving && currentCar) camCtl.yawOffset = clamp(camCtl.yawOffset + yawDelta, -Math.PI, Math.PI);
+  else S.playerHeading = wrapAng(S.playerHeading + yawDelta);
+  const eff = clamp(basePitch() + camCtl.pitchOffset + pitchDelta, PITCH_MIN, PITCH_MAX);
+  camCtl.pitchOffset = eff - basePitch();
+  camCtl.lastMoveT = performance.now() / 1000;
+}
+canvas.addEventListener('pointerdown', e => {
+  initAudio();
+  camCtl.down = true; camCtl.dragged = false; camCtl.moveAcc = 0;
+  camCtl.lastX = e.clientX; camCtl.lastY = e.clientY;
+});
+addEventListener('pointermove', e => {
+  if (document.pointerLockElement === canvas) {
+    if (S.mode !== 'play') return;
+    camCtl.moveAcc += Math.abs(e.movementX) + Math.abs(e.movementY);
+    if (camCtl.moveAcc >= 6) camCtl.dragged = true;
+    applyMouseLook(e.movementX, e.movementY);
+    return;
+  }
+  if (!camCtl.down) return;
+  const dx = e.clientX - camCtl.lastX, dy = e.clientY - camCtl.lastY;
+  camCtl.lastX = e.clientX; camCtl.lastY = e.clientY;
+  camCtl.moveAcc += Math.abs(dx) + Math.abs(dy);
+  if (camCtl.moveAcc >= 6) camCtl.dragged = true;
+  if (camCtl.dragged && S.mode === 'play') applyMouseLook(dx, dy);
+});
+addEventListener('pointerup', () => {
+  if (!camCtl.down) return;
+  camCtl.down = false;
+  if (camCtl.dragged || S.mode !== 'play') return; // a drag only orbited — never fires
+  if (!S.driving) playerShoot();
+  if (document.pointerLockElement !== canvas) {
+    try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); }
+    catch { /* pointer lock unavailable (e.g. headless): drag-look still works */ }
+  }
+});
 function useAbility(i) {
   const a = S.abilities[i], now = performance.now();
   if (now < a.until) return;
@@ -738,6 +800,9 @@ const startScreen = document.getElementById('start-screen');
 function beginGame(fromSave) {
   initAudio();
   S.mode = 'play';
+  S.camOverride = null; // the menu vista override must not follow the player into play:
+                        // with it set, updateCamera never ran the follow/orbit branches
+                        // and the camera stayed frozen on the menu framing all game
   startScreen.style.display = 'none';
   document.querySelectorAll('.panel').forEach(p => { if (p.id !== 'hud-prompt' && p.id !== 'hud-banner') p.style.display = ''; });
   if (fromSave) { const sv = loadSave(); if (sv) applySave(sv); else startMission(0); }
@@ -917,17 +982,34 @@ function updateWorldFx(dt, t) {
 }
 function updateCamera(dt) {
   let tx, ty, tz, lx, ly, lz;
-  if (S.camOverride) { [tx, ty, tz] = S.camOverride.pos; [lx, ly, lz] = S.camOverride.look; }
+  if (S.camOverride) {
+    [tx, ty, tz] = S.camOverride.pos; [lx, ly, lz] = S.camOverride.look;
+    camCtl.yaw = Math.atan2(lx - tx, lz - tz);
+    camCtl.pitch = Math.atan2(ty - ly, Math.hypot(lx - tx, lz - tz));
+  }
   else if (S.driving && currentCar) {
-    const h = currentCar.heading;
-    tx = currentCar.group.position.x - Math.sin(h) * 7.6 + Math.sin(h + Math.PI / 2) * 1.1;
-    tz = currentCar.group.position.z - Math.cos(h) * 7.6 + Math.cos(h + Math.PI / 2) * 1.1;
-    ty = 2.05;
+    // Azimuth eases behind the car (exponential, frame-rate independent);
+    // the mouse orbit offset decays back to zero ~2-3 s after the mouse
+    // goes idle, so the camera always settles behind the vehicle again.
+    camCtl.driveYaw += wrapAng(currentCar.heading - camCtl.driveYaw) * Math.min(1, dt * 3.2);
+    if (performance.now() / 1000 - camCtl.lastMoveT > 1.0) camCtl.yawOffset *= Math.exp(-dt * 1.6);
+    if (Math.abs(camCtl.yawOffset) < 0.0005) camCtl.yawOffset = 0;
+    const h = camCtl.driveYaw + camCtl.yawOffset;
+    const pitch = clamp(basePitch() + camCtl.pitchOffset, PITCH_MIN, PITCH_MAX);
+    tx = currentCar.group.position.x - Math.sin(h) * 7.6 + Math.cos(h) * 1.1;
+    tz = currentCar.group.position.z - Math.cos(h) * 7.6 - Math.sin(h) * 1.1;
+    ty = 1.1 + Math.tan(pitch) * 7.68;
     lx = currentCar.group.position.x + Math.sin(h) * 9; ly = 1.1; lz = currentCar.group.position.z + Math.cos(h) * 9;
+    camCtl.yaw = h; camCtl.pitch = pitch;
   } else {
+    // On foot the camera yaw IS the player's heading (mouse or A/D turn it),
+    // so the camera always sits behind the direction the player faces.
     const h = S.playerHeading;
-    tx = playerPos.x - Math.sin(h) * 6.4; tz = playerPos.z - Math.cos(h) * 6.4; ty = 2.5;
+    const pitch = clamp(basePitch() + camCtl.pitchOffset, PITCH_MIN, PITCH_MAX);
+    tx = playerPos.x - Math.sin(h) * 6.4; tz = playerPos.z - Math.cos(h) * 6.4;
+    ty = 1.25 + Math.tan(pitch) * 6.4;
     lx = playerPos.x + Math.sin(h) * 6; ly = 1.25; lz = playerPos.z + Math.cos(h) * 6;
+    camCtl.yaw = h; camCtl.pitch = pitch;
   }
   // camera collision: keep the camera over the open corridor, never inside a building volume
   tx = clamp(tx, -30, 8.4); ty = Math.max(ty, 0.7);
@@ -990,6 +1072,7 @@ window.__game = {
   exitCar, fps: () => fpsShown, mood: () => moodName, applyMood,
   setHealth(v) { S.health = v; }, roadblock: () => !!roadblock,
   camPos: () => ({ x: camera.position.x, y: camera.position.y, z: camera.position.z }),
+  camYaw: () => camCtl.yaw, camPitch: () => camCtl.pitch, playerHeading: () => S.playerHeading,
   beginNew() { S.freeRoam = false; beginGame(false); },
   beginContinue() { beginGame(true); },
 };
