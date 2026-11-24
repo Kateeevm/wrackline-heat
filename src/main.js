@@ -136,13 +136,41 @@ plane(2.6, 1000, mat(0xb9ac96, 0.95), 7.6, 0, 0.01);                     // city
     s.rotation.x = -Math.PI / 2; s.position.set(-4.4 + i * 2.2, 0.035, z); scene.add(s);
   }
 }
-// sea: animated vertex waves + foam strip
+// sea: STILL surface (ronde 3 — no wave animation; colours/glint unchanged) + foam strip
 const seaGeo = new THREE.PlaneGeometry(150, 1000, 28, 90);
 const sea = new THREE.Mesh(seaGeo, new THREE.MeshStandardMaterial({ color: 0x2a6d84, roughness: 0.32, metalness: 0.25, transparent: true, opacity: 0.94 }));
 sea.rotation.x = -Math.PI / 2; sea.position.set(-92, 0.12, 0); scene.add(sea);
-const seaBase = seaGeo.attributes.position.array.slice();
 const foam = plane(1.6, 1000, new THREE.MeshBasicMaterial({ color: 0xf4f1e4, transparent: true, opacity: 0.65 }), -15.2, 0, 0.05);
 const glint = plane(13, 1000, new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0.1, depthWrite: false }), -34, 0, 0.16);
+// seawall + guardrail (ronde 3): continuous barrier along the boulevard's sea
+// side. The gameplay clamps stop the player/car CENTRE at x=-13.5 (foot and
+// driving alike); with body half-extents ~0.45 (person) / ~0.97 (car), the
+// wall's road face at x=-14.25 is where bodies visually stop — never through
+// it, never floating before it. Top of rail = 1.18 m, so the sea view from
+// the chase/foot cameras stays open. One opening at the pier (z 159..169),
+// where the pier deck + its own railing continue the line; elsewhere the wall
+// butts into the marina docks and the lighthouse base like real shore works.
+{
+  const concMat = mat(0xb3aa99, 0.95), capMat = mat(0xd8d1bd, 0.9);
+  const railMetal = new THREE.MeshStandardMaterial({ color: 0xc9ced4, roughness: 0.35, metalness: 0.75 });
+  const runs = [[-445, 159], [169, 445]];
+  let postTotal = 0; for (const [z0, z1] of runs) postTotal += Math.floor((z1 - z0) / 3) + 1;
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.09, 0.24, 0.09), railMetal, postTotal);
+  const m4 = new THREE.Matrix4(); let pi = 0;
+  for (const [z0, z1] of runs) {
+    const len = z1 - z0, zc = (z0 + z1) / 2;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.85, len), concMat);
+    wall.position.set(-14.5, 0.43, zc); wall.castShadow = true; wall.receiveShadow = true; scene.add(wall);
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.1, len), capMat);
+    cap.position.set(-14.55, 0.9, zc); cap.castShadow = true; scene.add(cap);
+    for (const ry of [0.99, 1.15]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.06, len), railMetal);
+      rail.position.set(-14.32, ry, zc); scene.add(rail);
+    }
+    for (let z = z0; z <= z1; z += 3) { m4.setPosition(-14.32, 1.06, z); posts.setMatrixAt(pi++, m4); }
+  }
+  posts.count = pi; posts.castShadow = true; scene.add(posts);
+}
 
 // blob shadow texture (AO grounding for every actor)
 const blobTex = (() => {
@@ -163,6 +191,25 @@ const DISTRICTS = [
   { name: 'Gullmarket', z: 58 }, { name: 'Cannery Steps', z: -52 }, { name: 'Moonpool Marina', z: -158 },
   { name: 'The Saltworks', z: -262 }, { name: 'Ferry Landing', z: -366 },
 ];
+// ---------- city grid layout (ronde 4) ----------
+// Four cross streets run east from the boulevard into the city at these z
+// centres (chosen in the gaps between mission sites: pier 164, marina -158
+// and every mission z stay clear), tied together by two inland avenues
+// parallel to the boulevard — real blocks, not a facade strip. GRID_HALF is
+// the building-clearance half-width of a street corridor (5.5 road + 2.2
+// sidewalk + 0.4 margin).
+const CROSS_Z = [236, 77, -97, -278];
+const AVE_X = [33, 64];
+const GRID_HALF = 8.1;
+function clearCrossZ(z, hd) { // nudge a building centre out of every cross corridor
+  for (const cz of CROSS_Z) if (Math.abs(z - cz) < GRID_HALF + hd) z = cz + (z >= cz ? 1 : -1) * (GRID_HALF + hd);
+  return z;
+}
+function inGrid(x, z, hw, hd) { // does this AABB touch any street corridor?
+  for (const cz of CROSS_Z) if (Math.abs(z - cz) < GRID_HALF + hd) return true;
+  for (const ax of AVE_X) if (Math.abs(x - ax) < GRID_HALF + hw) return true;
+  return false;
+}
 const lampHeads = [], lampPools = [];
 const lampPoolMat = new THREE.MeshBasicMaterial({ color: 0xffc98a, transparent: true, opacity: 0, depthWrite: false });
 function buildCity() {
@@ -171,7 +218,8 @@ function buildCity() {
   for (const d of DISTRICTS) {
     for (let i = 0; i < 5; i++) {
       const w = 13 + rnd() * 7, dep = 11 + rnd() * 5, hgt = 13 + rnd() * 26;
-      const x = 10.4 + dep / 2, z = d.z - 46 + i * 23 + rnd() * 5;
+      const x = 10.4 + dep / 2; let z = d.z - 46 + i * 23 + rnd() * 5;
+      z = clearCrossZ(z, w / 2); // ronde 4: facade row opens at the cross-street mouths
       const b = new THREE.Mesh(new THREE.BoxGeometry(dep, hgt, w), facadeMats[fi++ % facadeMats.length]);
       b.position.set(x, hgt / 2, z); b.castShadow = true; b.receiveShadow = true; scene.add(b);
       const cap = new THREE.Mesh(new THREE.BoxGeometry(dep + 0.7, 0.7, w + 0.7), trimMat);
@@ -185,6 +233,7 @@ function buildCity() {
     for (let i = 0; i < 3; i++) {
       const w = 18 + rnd() * 8, dep = 14, hgt = 30 + rnd() * 34;
       const x = 34 + rnd() * 8, z = d.z - 40 + i * 38;
+      if (inGrid(x, z, dep / 2, w / 2)) continue; // ronde 4: the skyline row stands where the avenues run now — the grid fill below replaces it block by block
       const b = new THREE.Mesh(new THREE.BoxGeometry(dep, hgt, w), facadeMats[fi++ % facadeMats.length]);
       b.position.set(x, hgt / 2, z); scene.add(b); addCollider(x, z, dep / 2, w / 2);
     }
@@ -245,12 +294,14 @@ function buildCity() {
       palmIdx++;
       g.position.set(x + (rnd() - 0.5) * 0.5, 0, z + rnd() * 6);
       const sc = 0.92 + rnd() * 0.16; g.scale.set(sc, sc * (0.95 + rnd() * 0.1), sc);
+      if (x > 0 && CROSS_Z.some(cz => Math.abs(g.position.z - cz) < 8.6)) continue; // ronde 4: no palm standing in a cross-street mouth
       scene.add(g); blob(g, 1.6, 1.6); addCollider(g.position.x, g.position.z, 0.35, 0.35);
     }
   }
   // lamps both sides
   const poleMat = mat(0x3c4248, 0.6, 0.6);
   for (let z = -450; z < 460; z += 30) for (const x of [-6.6, 6.6]) {
+    if (x > 0 && CROSS_Z.some(cz => Math.abs(z - cz) < 8.6)) continue; // ronde 4: corner lamp yields to the street mouth
     const g = new THREE.Group();
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 5.4, 6), poleMat); pole.position.y = 2.7; pole.castShadow = true; g.add(pole);
     const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffe2b0, emissive: 0xffc98a, emissiveIntensity: 0 }));
@@ -261,6 +312,95 @@ function buildCity() {
   }
 }
 buildCity();
+
+// ---------- city grid build (ronde 4) ----------
+// Surfaces sit a few mm above the boulevard/city planes in a fixed stack
+// (boulevard 0.02 < avenue 0.026 < cross 0.034, sidewalks interleaved) so
+// overlaps never z-fight. All variation comes from a local LCG, so the
+// shared rnd stream (buildings, palms, landmarks) is untouched.
+function buildCityGrid() {
+  let gs = 424243; const grnd = () => { gs = (gs * 16807) % 2147483647; return (gs - 1) / 2147483646; };
+  const sideMat = mat(0xb9ac96, 0.95);
+  const asphaltAve = new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.6, metalness: 0.05 });
+  const crossTex = asphaltTex.clone(); crossTex.needsUpdate = true;
+  crossTex.center.set(0.5, 0.5); crossTex.rotation = Math.PI / 2; crossTex.repeat.set(1, 6); // wheel tracks run along x
+  const asphaltCross = new THREE.MeshStandardMaterial({ map: crossTex, roughness: 0.6, metalness: 0.05 });
+  // lane dashes, instanced (avenue dashes run along z, cross dashes along x)
+  const dashMat = new THREE.MeshBasicMaterial({ color: 0xf5ead0 });
+  const rotM = new THREE.Matrix4().makeRotationX(-Math.PI / 2), m4 = new THREE.Matrix4();
+  function dashField(geo, list, y) {
+    const im = new THREE.InstancedMesh(geo, dashMat, list.length);
+    list.forEach(([x, z], i) => { m4.copy(rotM).setPosition(x, y, z); im.setMatrixAt(i, m4); });
+    scene.add(im);
+  }
+  const dashZ = [], dashX = [];
+  for (const ax of AVE_X) {
+    plane(11, 890, asphaltAve, ax, 0, 0.026);
+    plane(2.2, 890, sideMat, ax - 6.6, 0, 0.018); plane(2.2, 890, sideMat, ax + 6.6, 0, 0.018);
+    for (let z = -438; z < 440; z += 12) for (const lx of [ax - 1.6, ax + 1.6]) dashZ.push([lx, z]);
+  }
+  for (const cz of CROSS_Z) {
+    plane(80.2, 11, asphaltCross, 33.9, cz, 0.034); // boulevard west edge → the end-cap buildings
+    plane(67.8, 2.2, sideMat, 40.1, cz - 6.6, 0.024); plane(67.8, 2.2, sideMat, 40.1, cz + 6.6, 0.024);
+    for (let x = -2; x < 72; x += 12) for (const lz of [cz - 1.6, cz + 1.6]) dashX.push([x, lz]);
+  }
+  dashField(new THREE.PlaneGeometry(0.22, 3.2), dashZ, 0.041);
+  dashField(new THREE.PlaneGeometry(3.2, 0.22), dashX, 0.049);
+  // block segments between the cross corridors, filled with real buildings
+  const bounds = [438, ...CROSS_Z, -438].sort((a, b) => b - a);
+  const segs = [];
+  for (let i = 0; i + 1 < bounds.length; i++) segs.push([bounds[i + 1] + (i + 1 < bounds.length - 1 ? GRID_HALF : 0), bounds[i] - (i > 0 ? GRID_HALF : 0)]);
+  let fi = 0;
+  function fillRow(cx, dep, hMin, hMax) {
+    for (const [lo, hi] of segs) {
+      let z = lo + 1;
+      while (true) {
+        const w = 15 + grnd() * 7;
+        if (z + w > hi - 1) break;
+        const hgt = hMin + grnd() * (hMax - hMin), zc = z + w / 2;
+        const b = new THREE.Mesh(new THREE.BoxGeometry(dep, hgt, w), facadeMats[fi++ % facadeMats.length]);
+        b.position.set(cx, hgt / 2, zc); b.castShadow = true; b.receiveShadow = true; scene.add(b);
+        addCollider(cx, zc, dep / 2, w / 2);
+        z += w + 3 + grnd() * 4;
+      }
+    }
+  }
+  fillRow(47.9, 14, 13, 36);  // between the avenues — fronts both of them
+  fillRow(78.4, 13, 16, 42);  // east of Avenue B — fronts it, backs the world edge
+  for (const cz of CROSS_Z) { // a building across each cross street's east end
+    const hgt = 15 + grnd() * 14;
+    const b = new THREE.Mesh(new THREE.BoxGeometry(13, hgt, 15.4), facadeMats[fi++ % facadeMats.length]);
+    b.position.set(78.4, hgt / 2, cz); b.castShadow = true; b.receiveShadow = true; scene.add(b);
+    addCollider(78.4, cz, 6.5, 7.7);
+  }
+  // street lamps on the new streets (heads/pools join the shared mood lists)
+  const poleMat = mat(0x3c4248, 0.6, 0.6);
+  function gridLamp(x, z) {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 5.4, 6), poleMat); pole.position.y = 2.7; pole.castShadow = true; g.add(pole);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), new THREE.MeshStandardMaterial({ color: 0xffe2b0, emissive: 0xffc98a, emissiveIntensity: 0 }));
+    head.position.y = 5.4; g.add(head); lampHeads.push(head);
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(3.4, 18), lampPoolMat);
+    pool.rotation.x = -Math.PI / 2; pool.position.y = 0.045; g.add(pool); lampPools.push(pool);
+    g.position.set(x, 0, z); scene.add(g);
+  }
+  for (let z = -420; z <= 420; z += 60) { gridLamp(AVE_X[0] + 6.6, z); gridLamp(AVE_X[1] - 6.6, z + 30); }
+  for (const cz of CROSS_Z) for (const lx of [18, 46]) gridLamp(lx, cz + 6.6);
+  // parked cars dress the new streets (static props with real colliders;
+  // traffic routing stays on the boulevard — see RESULTS ronde 4)
+  const parkCols = [0xc0c4c8, 0xb8562f, 0xe3ddc8, 0x39548c, 0xc9a44a, 0x8a3038];
+  let pk = 0;
+  function park(x, z, heading) {
+    const c = makeCar({ color: parkCols[pk % parkCols.length], suv: pk % 3 === 0 }); pk++;
+    c.group.position.set(x, 0, z); c.heading = heading; c.group.rotation.y = heading; c.speed = 0;
+    if (Math.abs(Math.sin(heading)) > 0.5) addCollider(x, z, 2.7, 1.1); else addCollider(x, z, 1.1, 2.7);
+  }
+  segs.forEach(([lo, hi], i) => { const zm = (lo + hi) / 2; park(AVE_X[0] - 3.9, zm - 12, Math.PI); if (i % 2) park(AVE_X[1] + 3.9, zm + 16, 0); });
+  CROSS_Z.forEach((cz, i) => { if (i % 2) park(47, cz + 4.1, -Math.PI / 2); else park(15, cz - 4.1, Math.PI / 2); });
+}
+// NOTE: buildCityGrid() is invoked after the vehicles section below — its
+// parked cars are built by makeCar(), whose geometries/materials are consts
+// declared there (calling it here would hit their TDZ).
 
 // ---------- landmarks: pier + ferris wheel, marina, lighthouse ----------
 const wheel = new THREE.Group(); let lighthouseBeam, wheelRotor; const gondolas = [];
@@ -348,7 +488,7 @@ function buildLandmarks() {
   }
   wheel.add(tube(0, 0, -1.6, 0, 0, 1.6, 0.3, darkSteel));
   wheel.position.set(-36, 10.6, 164); scene.add(wheel);
-  // marina: docks + bobbing sailboats
+  // marina: docks + sailboats (moored still with the frozen sea, ronde 3)
   window.__boats = [];
   const dockMat = mat(0x7d6a50, 0.95);
   for (let i = 0; i < 5; i++) {
@@ -501,6 +641,7 @@ for (let i = 0; i < 4; i++) {
   blob(b, 2.8, 1, 0.045);
   b.visible = false; scene.add(b); barriers.push({ group: b, active: false });
 }
+buildCityGrid(); // ronde 4: streets + block fill + parked cars (needs makeCar, declared above)
 // ---------- people ----------
 // Humanoid builder — human proportions (~1.85 m), ONE shared builder for the
 // player, peds, enemies and crew: head on a neck (hair cap or hat per style),
@@ -568,6 +709,17 @@ for (let i = 0; i < 14; i++) {
   const side = i % 2 ? -7.6 : 7.6;
   p.group.position.set(side, 0, -400 + i * 58 + rnd() * 20);
   p.dir = rnd() < 0.5 ? 1 : -1; p.side = side; p.fallen = 0;
+  peds.push(p);
+}
+// ronde 4: pedestrians on the new streets — cross-street sidewalks walk along
+// x between the boulevard and Avenue B; avenue sidewalks walk along z (the
+// shared z branch, with p.side as their x). axis/min/max are read by
+// updatePedsEnemies; boulevard peds above keep axis undefined = 'z'.
+for (let i = 0; i < 10; i++) {
+  const p = makePerson(SKINS[(i + 2) % 5], SHIRTS[(i + 3) % 8], 0x3a3f47, i % 2 ? { cap: 0x8a3038 } : { hair: [0x2a1c11, 0x6e4525, 0xb8b0a0, 0x14100a][i % 4] });
+  if (i < 6) { const cz = CROSS_Z[i % 4]; p.axis = 'x'; p.min = 11; p.max = 68; p.group.position.set(14 + i * 9, 0, cz + (i % 2 ? 6.6 : -6.6)); }
+  else { p.axis = 'z'; p.side = i % 2 ? AVE_X[0] + 6.6 : AVE_X[1] - 6.6; p.group.position.set(p.side, 0, -300 + i * 85); }
+  p.dir = i % 2 ? -1 : 1; p.fallen = 0;
   peds.push(p);
 }
 const enemies = [];
@@ -861,7 +1013,7 @@ function loadSave() {
 }
 function applySave(sv) {
   S.money = sv.money ?? 250;
-  playerPos.set(clamp(sv.px ?? -5.6, -13, 8), 0, clamp(sv.pz ?? 200, -430, 430));
+  playerPos.set(clamp(sv.px ?? -5.6, -13, 88), 0, clamp(sv.pz ?? 200, -430, 430)); // ronde 4: a save made inland restores inland
   if (sv.done) { S.freeRoam = true; S.mission = null; marker.visible = false; }
   else {
     startMission(clamp(sv.missionIdx ?? 0, 0, MISSIONS.length - 1));
@@ -1019,7 +1171,7 @@ function updatePlayer(dt) {
     const px = c.group.position.x, pz = c.group.position.z;
     c.group.position.x += Math.sin(c.heading) * c.speed * dt;
     c.group.position.z += Math.cos(c.heading) * c.speed * dt;
-    c.group.position.x = clamp(c.group.position.x, -13.5, 8);
+    c.group.position.x = clamp(c.group.position.x, -13.5, 88); // ronde 4: land bound opens to the city grid (sea bound -13.5 unchanged); building colliders do the containing inside the city
     c.group.position.z = clamp(c.group.position.z, -436, 436);
     const before = { x: px, z: pz };
     collide(c.group.position, 1.6);
@@ -1057,7 +1209,7 @@ function updatePlayer(dt) {
     const sp = (keys.ShiftLeft || keys.ShiftRight) ? 7.4 : 4.3;
     playerPos.x += Math.sin(S.playerHeading) * fwd * sp * dt;
     playerPos.z += Math.cos(S.playerHeading) * fwd * sp * dt;
-    playerPos.x = clamp(playerPos.x, -13.5, 8.6);
+    playerPos.x = clamp(playerPos.x, -13.5, 88); // ronde 4: same land-side opening on foot
     playerPos.z = clamp(playerPos.z, -436, 436);
     collide(playerPos, 0.5);
     playerPerson.group.position.copy(playerPos);
@@ -1131,9 +1283,15 @@ function updatePolice(dt) {
 function updatePedsEnemies(dt) {
   for (const p of peds) {
     if (p.fallen > 0) { p.fallen -= dt; if (p.fallen <= 0) { p.group.rotation.x = 0; p.group.position.y = 0; } continue; }
-    p.group.position.z += p.dir * 1.15 * dt;
-    if (p.group.position.z > 445) p.dir = -1; if (p.group.position.z < -445) p.dir = 1;
-    p.group.rotation.y = p.dir > 0 ? 0 : Math.PI;
+    if (p.axis === 'x') { // ronde 4: cross-street sidewalk walkers move along x
+      p.group.position.x += p.dir * 1.15 * dt;
+      if (p.group.position.x > p.max) p.dir = -1; if (p.group.position.x < p.min) p.dir = 1;
+      p.group.rotation.y = p.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    } else {
+      p.group.position.z += p.dir * 1.15 * dt;
+      if (p.group.position.z > 445) p.dir = -1; if (p.group.position.z < -445) p.dir = 1;
+      p.group.rotation.y = p.dir > 0 ? 0 : Math.PI;
+    }
     p.walkPh += dt * 6; const psw2 = Math.sin(p.walkPh);
     p.armL.rotation.x = psw2 * 0.45; p.armR.rotation.x = -psw2 * 0.45;
     p.legL.rotation.x = -psw2 * 0.42; p.legR.rotation.x = psw2 * 0.42;
@@ -1174,14 +1332,9 @@ function updatePedsEnemies(dt) {
   }
 }
 function updateWorldFx(dt, t) {
-  // sea waves
-  const pos = seaGeo.attributes.position;
-  for (let i = 0; i < pos.count; i++) {
-    const x = seaBase[i * 3], y = seaBase[i * 3 + 1];
-    pos.setZ(i, Math.sin(x * 0.11 + t * 1.1) * 0.22 + Math.cos(y * 0.05 + t * 0.7) * 0.18);
-  }
-  pos.needsUpdate = true;
-  foam.material.opacity = 0.45 + Math.sin(t * 0.9) * 0.2;
+  // sea is STILL (ronde 3): no vertex waves, no foam pulse — the surface,
+  // colours and sun glint are exactly as built, only the motion is gone
+  // (this also removes the per-frame CPU vertex update the waves cost).
   if (heliRotor) heliRotor.rotation.y += dt * 28;
   if (heliTail) heliTail.rotation.x += dt * 32;
   if (wheelRotor) { // ferris wheel: rotor turns, gondola cabins counter-rotate to hang upright + sway
@@ -1189,7 +1342,7 @@ function updateWorldFx(dt, t) {
     const wt = performance.now() / 1000;
     for (let i = 0; i < gondolas.length; i++) gondolas[i].rotation.z = -wheelRotor.rotation.z + Math.sin(wt * 0.8 + i * 1.93) * 0.07;
   }
-  for (const b of window.__boats) { b.position.y = 0.1 + Math.sin(t * 1.2 + b.userData.ph) * 0.14; b.rotation.z = Math.sin(t * 0.9 + b.userData.ph) * 0.05; }
+  // marina boats stay moored and motionless with the still sea (ronde 3)
   if (lighthouseBeam && MOODS[moodName].beam > 0) lighthouseBeam.rotation.y = t * 0.5;
   marker.rotation.y += dt * 1.4;
   for (let i = effects.length - 1; i >= 0; i--) {
@@ -1198,6 +1351,7 @@ function updateWorldFx(dt, t) {
     if (e.t <= 0) { scene.remove(e.obj); if (e.obj.geometry) e.obj.geometry.dispose(); effects.splice(i, 1); }
   }
 }
+const camScratch = new THREE.Vector3();
 function updateCamera(dt) {
   let tx, ty, tz, lx, ly, lz;
   if (S.camOverride) {
@@ -1229,8 +1383,14 @@ function updateCamera(dt) {
     lx = playerPos.x + Math.sin(h) * 6; ly = 1.25; lz = playerPos.z + Math.cos(h) * 6;
     camCtl.yaw = h; camCtl.pitch = pitch;
   }
-  // camera collision: keep the camera over the open corridor, never inside a building volume
-  tx = clamp(tx, -30, 8.4); ty = Math.max(ty, 0.7);
+  // camera collision: keep the camera over open ground, never inside a
+  // building volume. Staged/menu overrides keep the exact ronde-3 bound and
+  // framing; in play (ronde 4) the bound extends over the city grid and the
+  // target is pushed out of building AABBs — the follow/orbit math above is
+  // untouched, and on the boulevard targets stay inside the old bound anyway.
+  if (S.camOverride) tx = clamp(tx, -30, 8.4);
+  else { tx = clamp(tx, -30, 92); camScratch.set(tx, 0, tz); collide(camScratch, 0.4); tx = camScratch.x; tz = camScratch.z; }
+  ty = Math.max(ty, 0.7);
   camera.position.x += (tx - camera.position.x) * Math.min(1, dt * 7);
   camera.position.y += (ty - camera.position.y) * Math.min(1, dt * 7);
   camera.position.z += (tz - camera.position.z) * Math.min(1, dt * 7);
@@ -1276,7 +1436,7 @@ const G = { S, units, traffic, enemies, heli, playerPos, district: 'Wrackline St
   spawnTracer, spawnFlash, setSpotlight(alpha) { coneMesh.visible = alpha > 0; poolMesh.visible = alpha > 0; coneMesh.material.opacity = 0.13 * alpha; },
   placeCone(fx, fy, fz, tx, tz) { aimCone(new THREE.Vector3(fx, fy, fz), tx, tz); },
   aimConeAt(x, z) { poolMesh.position.set(x, 0.07, z); },
-  V3: THREE.Vector3, camera, scene };
+  V3: THREE.Vector3, camera, scene, cityGrid: { cross: CROSS_Z, aves: AVE_X } };
 window.__game = {
   S, G, playerPos, units, enemies, traffic, policeCars, peds,
   teleport(x, z) { playerPos.set(x, 0, z); if (S.driving && currentCar) { currentCar.group.position.set(x, 0, z); } else playerPerson.group.position.copy(playerPos); },

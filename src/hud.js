@@ -74,13 +74,16 @@ function drawMinimap(G) {
   const S = G.S, W = 376, H = 248;
   mm.fillStyle = '#12242e'; mm.fillRect(0, 0, W, H);
   const zc = G.playerPos.z;
-  const px = wx => (wx + 42) / 84 * W;               // world x -42..42
+  const px = wx => (wx + 42) / 128 * W;              // world x -42..86 (ronde 4: widened so the whole grid fits)
   const pz = wz => (wz - (zc - 165)) / 330 * H;      // player-centred z window ±165
   mm.fillStyle = '#1d4e5e'; mm.fillRect(0, 0, px(-14), H);                    // sea
   mm.fillStyle = '#c9b083'; mm.fillRect(px(-14), 0, px(-9) - px(-14), H);     // sand
   mm.fillStyle = '#3a3f45'; mm.fillRect(px(-6), 0, px(6) - px(-6), H);        // boulevard
-  mm.strokeStyle = 'rgba(255,255,255,.35)'; mm.lineWidth = 1;
-  for (let z = Math.floor((zc - 165) / 60) * 60; z <= zc + 165; z += 60) { mm.beginPath(); mm.moveTo(px(-6), pz(z)); mm.lineTo(px(30), pz(z)); mm.stroke(); }
+  if (G.cityGrid) { // ronde 4: the real network — avenue bands + cross-street bands, same road colour
+    mm.fillStyle = '#3a3f45';
+    for (const ax of G.cityGrid.aves) mm.fillRect(px(ax - 5.5), 0, px(ax + 5.5) - px(ax - 5.5), H);
+    for (const cz of G.cityGrid.cross) { const y0 = pz(cz - 5.5); if (y0 < H && pz(cz + 5.5) > 0) mm.fillRect(px(-6), y0, px(74) - px(-6), pz(cz + 5.5) - y0); }
+  }
   mm.strokeStyle = '#ffb35c'; mm.beginPath(); mm.moveTo(px(0), 0); mm.lineTo(px(0), H); mm.stroke();
   if (S.wanted >= 3) { // search radius
     mm.strokeStyle = 'rgba(255,80,60,.8)'; mm.beginPath();

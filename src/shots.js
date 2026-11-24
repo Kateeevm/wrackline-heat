@@ -75,7 +75,7 @@ function stageStart(G, S) {
   G.stagePeds(210, 8);
   G.heli.position.set(-26, 22, 120); G.heli.rotation.y = Math.PI * 0.8;
   G.setSpotlight(0);
-  S.camOverride = { pos: [4.5, 10, 274], look: [-22, 3, 150] };
+  S.camOverride = { pos: [12, 9, 266], look: [8, 1.5, 196] }; // ronde 4: vista reframed so the z=236 cross-street mouth + facade gap read in the mid-ground (hero car already stages at the intersection, z=232)
   G.playerPos.set(3.4, 0, 232);
 }
 function stageNight(G, S) {
